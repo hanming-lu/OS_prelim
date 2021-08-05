@@ -3315,17 +3315,1774 @@ Background
 
 ## 139 - Dynamo
 
-==TODO==
+#### Background
 
+- Dynamo is a highly available data storage
+- A simple key/value interface
+- highly available with a clearly defined consistency window, efficient in its resource usage, a simple scale out scheme
+- Data is partitioned and replicated using consistent hashing
+- Consistency is facilitated by object versioning
+- Consistency among replicas is maintained by a quorum-like technique and a decentralized replica synchronization protocol
 
+#### System Assumptions and Requirements
 
-## 140 - Tapastry
+<u>Query Model</u>
+
+- Simple read and write operations to a data item that is uniquely defined by a key
+  - state is stored as binary objects identified by unique keys
+- No range operations
+- No relational schema
+- Target applications that store small objects
+
+<u>ACID Properties:</u>
+
+- ACID (Atomicity, Consistency, Isolation, Durability)
+- Target applications that operate with weaker consistency, but high availability
+- Dynamo does not provide isolation guarantees
+- Only single key updates
+
+<u>Efficiency</u>
+
+- System needs to run on commodity hardware
+- Storage system must meet stringent SLAs
+- Tradeoffs are performance, availability, cost efficiency, and durability
+
+<u>Other Assumptions:</u>
+
+- No security related requirements
+- Needs to be highly scalable - hundreds of storage hosts
+
+#### Design Considerations
+
+<u>Consistency vs. Availability</u>
+
+- There is a tradeoff between consistency and availability when network failure happens
+- Traditional systems ensures consistency, where data is made unavailable until it is absolutely certain it is correct
+- Optimistic Replication Technique:
+  - Increase availability by propagating changes to replicas in the background, and concurrent, disconnected work is tolerated
+  - challenge: leads to conflicting changes, which need to be detected and resolved
+  - Question: when and who to resolve conflicts?
+- Dynamo is designed to be an eventually consistent data store: all updates will reach all replicas eventually
+- When:
+  - Should conflicts be resolved during reads or writes?
+  - If during write: writes could be rejected when it cannot reach to all replicas, hurts availability; simpler reads
+  - If during read: highly available for writes; complex reads
+- Who:
+  - Should conflicts be resolved by application or data store?
+  - if Data Store: does not have information from application level, can only use simple techniques such as "last write wins"
+  - if application: can have higher-level resolve techniques based on application need
+
+<u>Incremental Scalability</u>
+
+- Dynamo should be able to increment by one host at a time with minimal impact on the system operator and the system itself
+
+<u>Symmetry:</u>
+
+- All hosts should have the same responsibilities as their peers; no distinguished node
+- This reduces the cost of provisioning and maintenance
+
+<u>Decentralization</u>
+
+- In addition to symmetry, the design should favor decentralized peer-to-peer techniques instead of centralized control
+- System is simpler, more scalable, and more available
+- Centralized control may result in outages
+
+<u>Heterogeneity</u>
+
+- The system should exploit the heterogeneity of individual hosts
+- Work distribution should leverage the capability of hosts
+
+#### System Architecture
+
+- Core distributed system techniques: partitioning, replication, versioning, membership, failure handling, scaling
+
+<u>System Interface</u>
+
+- get(key): returns the object associated with the key or a list of objects, each with conflicting versions and a context
+- put(key, object, context): uses key to determine where to place replicas of the object. Context includes system metadata on the object, version of the object, etc.
+- Context is stored along with object, so the system can verify that the put caller has validity
+- Dynamo treats both key and object as an opaque array of bytes
+- Hash of key is used to determine which nodes are responsible for storing/serving the key
+
+<u>Partitioning</u>
+
+- Challenges of basic consistent hashing:
+  - Random positioning of nodes may result in non-uniform data and load distribution
+  - Does not account for heterogeneity in nodes (good nodes should take more load)
+- Consistent hashing with virtual node:
+  - each physical node can take multiple virtual nodes
+  - advantages:
+    - when a node leaves, its workload is evenly distributed to others
+    - when a node joins, it takes roughly equivalent workload as others
+    - Good nodes can take more virtual nodes (heterogeneity)
+
+<u>Replication</u>
+
+- The coordinator stores the key it is responsible for, and replicate it to N successor nodes
+- Preference list: the list of distinct physical nodes responsible for storing a particular key
+
+<u>Data Versioning</u>
+
+- Dynamo provides eventual consistency, where updates can be propagated to all replicas asynchronously
+  - a subsequent get() may not return the most recent put()
+- Each modification is treated as a new and immutable version of the data
+  - Allows multiple versions of the same data to be present
+- Version branching:
+  - failures + concurrent updates: conflicting versions may happen
+  - need client to merge and collapse multiple branches
+  - Applications need to explicitly acknowledge multiple versions
+- Vector clock:
+  - Use vector clock to capture relationships between versions (parallel vs. causal)
+  - when a client updates, it must specify which version it is updating using the context parameter
+- If multiple versions of an object exist, and cannot be syntactically reconciled, get() will return all existing objects with their context
+  - client is responsible for semantically reconcile them
+- To limit the amount of (node, counter) pairs, remove the oldest pair when a threshold is reached
+
+<u>Execution of put() and get() requests</u>
+
+- Client either sends requests to 1) a load balancer that routes to a random node; 2) to the coordinator (lower latency)
+- The coordinator is the first of top N nodes in the preference list
+- Consistency protocol R and W:
+  - R: the minimum number of nodes that must participate in a get() request
+  - W: the minimum number of nodes that must participate in a put() request
+  - If R + W > N, a quorum-like system
+  - total latency is the latency of the slowest node
+- put():
+  1. coordinator stores locally
+  2. coord sends to N highest-ranked reachable nodes
+  3. Wait for W-1 responses
+  4. return
+- get():
+  1. coordinator sends to all N highest-ranked reachable nodes
+  2. wait for R responses 
+  3. return (send all conflicting versions)
+
+<u>Handling Failures: Hinted Handoff</u>
+
+- Hinted handoff:
+  - When a node (e.g. A) is unavailable during a write, a temporary node (e.g. D) will receive the replica. This ensures availability and durability guarantees.
+  - The hinted replica is stored on a separate local storage, and knows it is supposed to be on A
+  - When A comes back, D sends the replica to A, and delete its own copy
+- To ensure highest availability, set W = 1
+- To have better durability, set greater W value
+- Tolerate datacenter outage by setting preference list to include multiple datacenter nodes
+
+<u>Handling Permanent Failures: Replica synchronization</u>
+
+- To handle threats to durability, Dynamo implements a replica synchronization protocol
+- Use one Merkle tree per virtual node's key range, each leaf is the hash of a key's value
+- Two hosting nodes can check if they have the same replicas by exchanging and comparing the root hash
+  - if different, recursively does it to its children, eventually find the key differences
+- Merkle tree advantages:
+  1. each branch can be checked individually without requesting other branches
+  2. reduce the data exchanged
+
+<u>Membership and Failure detection</u>
+
+- Assume outages are mostly temporary, use explicit membership addition or removal
+- The node that receives the request to add/remove stores it to persistent storage
+- Nodes periodically exchange, wants eventual consistency on view:
+  1. membership history information
+  2. mappings between virtual nodes and key ranges (allows direct forwarding of requests)
+- Purely local notion of failure detection:
+  - a node sees another node as temporary down if not responding messages
+  - repeatedly check unavailable nodes to see when it becomes alive
+
+#### Questions
+
+1. What problem does this paper address?
+   - How to design a highly available decentralized data storage system?
+2. What is the author's main insight? What are the paper's key strengths?
+
+| Problem                            | Solution                                    | Advantages                                                 |
+| ---------------------------------- | ------------------------------------------- | ---------------------------------------------------------- |
+| Partitioning                       | Consistent hashing                          | Incremental scalability                                    |
+| Highly available for writes        | data versioning with vector clock           | always writable, client resolves semantic conflicts        |
+| Handling temporary failures        | sloppy quorum and hinted handoff            | high availability and durability during node failures      |
+| Recovering from permanent failures | replica synchronization through merkle tree | synchronize in the background with minimal data exchanges  |
+| Membership and failure detection   | gossip-based protocol                       | avoid a central identity to manage membership and failures |
+
+4. What are the paper's key weaknesses?
+   - No security aspects?
+
+## 140 - Tapestry
+
+#### Overview
+
+- Tapestry is a P2P overlay network that provides high-performance, scalable, and location-independent routing of messages to close-by endpoints, using only localized resources.
+  - Core is a Decentralized Object Location and Routing (DOLR)
+- Aim for efficiency:
+  - minimize message latency
+  - maximizing message throughput
+- Tapestry exploits locality in routing messages to mobile endpoints such as object replicas
+- Use adaptive algorithms with soft state to maintain fault tolerance under changing node membership and network faults
+- Tapestry virtualizes resources, objects are known by name instead of locations
+
+#### Routing and Object Location
+
+<u>Routing Mesh</u>
+
+- Each node stores a neighbor map
+  - Each level stores neighbors that match a prefix up to a certain position in the ID
+  - Construct locally optimal routing tables from initialization and maintains them in order to reduce routing stretch
+- Each ID is mapped to a live node called the root
+- Each message is aiming to reach the ID
+- There are multiple hops for a message to find the root node:
+  - At each hop, a message is progressively routed closer to G by incremental prefix routing
+  - Each neighbour map has multiple levels, each level contains links to nodes matching up to a certain digit position in the ID
+  - e.g. level 1 has links to nodes that have nothing in common, level 2 has first digit in common, etc.
+- Routing takes O(log_B(N)), N is the namespace size, B is the ID base (e.g. hex=16)
+
+<u>Object Publication and Location</u>
+
+- Participants in the network can publish objects by periodically routing a publish message toward the root node
+  - Each node on the path store the pointer mapping the object
+- Objects are located by routing a message towards the root of the object
+  - Each node along the path checks the mapping and redirects the request appropriately
+
+#### Questions
+
+1. What problem does this paper address?
+   - How to provide efficient, location-aware distributed routing?
+2. What is the author's main insight?
+   - Routing table with neighbours that have x digits of prefix.
+   - Every hop is progressively closer to the root
+   - locality-aware routing
+3. What are the paper's key strengths?
+   - locality-aware
+   - efficient
+   - adapt to lower-level network failures
+4. What are the paper's key weaknesses?
+   - Algo is more complicated than Chord etc.
+
+## 141 - Pond
+
+#### Assumptions
+
+1. infrastructure is untrusted except in aggregate
+2. infrastructure is constantly changing without notices
+
+#### Data Model
+
+- A data object is similar to a file in a traditional file system
+- Data objects are ordered sequences of read-only versions
+- Each version:
+  - contains metadata, data, reference to previous versions
+  - stored in a data structure similar to a B-tree, where a block reference each child by a cryptographically-secure hash of child's content (i.e. Block GUID)
+  - Version GUID is the root block's BGUID
+  - copy on write
+
+<u>Application-specific Consistency</u>
+
+- Updates are applied atomically and are represented as an array of potential actions, each guarded by a predicate
+- Actions could be replacing bytes in a file, appending new data, etc
+- Predicates could be checking the latest version number of the object
+- Allow application to specify predicates required
+- Not support explicit locks or leases, instead relying on update model
+
+#### System Architecture
+
+<u>Virtualization with Tapestry</u>
+
+- Resources are virtual, where they are not tied to a specific physical instance, can be moved anytime
+- A virtual resource is named by a GUID, contains the state required to provide some service
+- Use Tapestry to locate resources, manage physical nodes, route messages
+
+<u>Replication and Consistency</u>
+
+- Data blocks are read only, so they can be replicated without worrying about consistency issues
+- Mapping from a data object (AGUID) to its latest version (VGUID) needs to be updated in a consistent manner:
+  - each data object has a primary replica, which is responsible for serializing and atomically applying updates with a BFT certificate within its inner ring
+
+<u>Archival Storage</u>
+
+- Erasure code: any m of n fragments can reconstruct the message
+  - achieve higher fault tolerance with the same amount of storage overhead
+- After an update, all data blocks are erasure coded, all encoded segments are distributed to nodes in the system using a deterministic function based on its fragment number and BGUID
+- To read a block, a host collects m fragments from different nodes, and decode
+
+<u>Caching</u>
+
+- For each read, first query Tapestry to look for a cached copy of the data block
+- After constructing a data block from fragments, publish cached copy to Tapestry
+
+![image-20210726223931040](/Users/hanminglu/Library/Application Support/typora-user-images/image-20210726223931040.png)
+
+#### Questions
+
+1. What problem does this paper address?
+   - How to build a decentralized storage system where infrastructure is untrusted unless in groups?
+2. What is the author's main insight?
+   - Use Tapestry to do the routing and resource management
+   - Use primary replica inner ring and BFT signature threshold to ensure inner ring is BFT
+   - Use erasure encoding to achieve high durability
+   - Use caching to amortize frequent block reads
+   - Data blocks are read-only, simplifying replication and consistency
+3. What are the paper's key strengths?
+   - BFT decentralized storage system
+   - Efficient read by utilizing caching
+   - High durability using erasure coding
+4. What are the paper's key weaknesses?
+   - Write is expensive due to BFT protocol, erasure coding, dissemination tree, etc.
+
+## 142 - The Google File System (GFS)
+
+#### Key Observations in Workload
+
+1. Component failures are norm instead of exception. The system needs constant monitor, error detection, failure tolerance, automatic recovery
+2. Modest amount of large files (multi-GB)
+3. The majority of write operations is appending. Rare overwriting existing data, no random write. 
+4. two kinds of reads: large sequential reads and small random reads
+5. Support concurrent appends to the same file, need atomicity with minimal synchronization overhead
+6. High sustained bandwidth is more important than low latency
+
+#### File System Interface
+
+- Traditional operations: create, open, close, read, write
+- Special operations: snapshot and record append
+  - snapshot: creates a copy of a file or a directory tree at low cost
+  - record append: allows multiple clients to concurrently append to a file while guaranteeing atomicity 
+
+#### Architecture
+
+- A single master, multiple chunkservers, multiple clients
+  - Master: maintains all metadata in the system, including namespace, access control information, mapping from files to chunks, locations of chunks. Controls system-wide activities such as chunk lease management, garbage collection, chunk migration
+  - Chunkserver: store data chunks
+  - Client: asks master for specific chunks' locations, contact chunkserver directly for data chunks and byte range within the data truncks
+- No caching on client or chunkserver
+  - client: no caching since mostly streaming read or working set too large to cache
+  - chunkserver: since local files, so Linux's buffer cache already caches
+
+#### Single Master & Multiple Chunkservers
+
+- Simplifies system design and allows sophisticated chunk placement and replication decisions
+- Minimize master's involvement in read and writes to prevent bottleneck
+- Master only handles metadata-related requests, no data transfers
+- After receiving locations of requested chunk index, the client sends a request (chunk index + byte offset) to the closest replica for actual data
+
+#### Chunck Size
+
+- Large chunks: size of 64MB
+- Advantages:
+  1. Reduce the number of communications required from client to master for chunk locations, especially for sequential read and write large files
+  2. Reduce metadata size stored on master, can be stored in memory
+- Disadvantages:
+  1. internal fragmentation: can be mitigated with lazy allocation
+  2. For a small file that consists of only a small number of chunks, chunkservers storing it can be hot spot. Mitigated with a higher replication factor
+
+#### Metadata
+
+- Master stores three types of metadata:
+  1. File and chunk namespaces (persisted by logging)
+  2. File-to-chunk mapping (persisted by logging)
+  3. chunk-to-chunkserver mapping
+- Log mutations to operation log on the master's local disk
+- Operation log is replicated to remote machines for fault tolerance
+- Does not store chunk-to-chunkserver mapping, instead the master asks chunkservers for chunk information at startup
+
+<u>In-Memory Data Structure</u>
+
+- Metadata is stored in memory -> fast master operations
+- In-memory data structure is compact:
+  - Less than 64Bytes per file (using filename prefix compression)
+  - Less than 64Bytes per 64MB chunk (chunk location + chunk size)
+- Master periodically scans its entire state to:
+  1. garbage chunk collection
+  2. re-replication after chunkserver failure
+  3. chunk migration to load balance
+
+<u>Chunk Location</u>
+
+- Master gains chunk location information by asking all chunkservers at startup
+- Then the master is up-to-date since it is managing chunk placement and monitor chunkserver status with HeartBeat msgs
+- The reason why not persisting chunk locations is that the chunkserver has the final word on what it has (e.g. errors may corrupt disks)
+
+<u>Operation Log</u>
+
+- Operation log contains the historical records of critical metadata changes
+- Changes to metadata should not be seen by the clients before they are persisted to both master and remote disks
+- Checkpointing is used to enable faster recovery
+  - internal state is structured such that checkpointing doesn't delay new changes
+  - In particular, master starts a new log file and creates the new checkpoint on a new thread
+
+#### Consistency Model
+
+<u>Metadata Mutations</u>
+
+- File namespace changes are solely handled by the master, so atomic
+  - use locking to guarantee atomicity and correctness
+  - use operation log to determine an order
+
+<u>File Region Mutation Result Types</u>
+
+- Defined: consistent + clients will see mutation writes in its entirety
+  - defined when a mutation succeeds without interference from concurrent writers
+- Consistent (not defined): all clients will see the same data, regardless of which replicas; it may not reflect what any one mutation has written; consists of mingled fragments from multiple mutations
+  - consistent but not defined when concurrent successful mutations
+- inconsistent (not defined): different clients may see different data at different times
+
+<u>Data Mutation</u>
+
+1. Write:
+   - data to be written at an application-specified file offset
+2. Record Append:
+   - data (i.e. a record) is appended atomically at least once even in the presence of concurrent mutations, but at an offset of GFS's choosing
+   - The offset is returned to the client, is the beginning of a defined region that contains the record
+   - GFS may insert padding or record duplicates in between
+
+- After a sequence of successful mutations, the mutated file region is guaranteed to be defined, and contain the data written by the last mutation. Achieved by:
+  1. Applying mutations to a chunk in the same order on all its replicas
+  2. using chunk version numbers to detect replicas that are stale due to chunkserver downtime
+- Stale replicas will never involve in mutations or given to clients, they are garbage collected
+- Stale client caches may allow clients to read from stale chunks, but not serious damage as it mostly returns a premature end of chunk rather than outdated data. The reader gets fresh data when it retries and contacts the master
+- Data corruption is detected using checksumming
+- Once a failure occurs, data is re-replicated from valid replicas as soon as possible
+
+<u>Implications for Applications</u>
+
+- Checkpoints may include application-level checksums to check how much has been successfully written
+  - Readers verify and process only the file region up to the last checkpoint (defined state)
+  - Appending is far more efficient and resilient to application failures than random writes
+  - Checkpointing allows writers to restart incrementally
+- Concurrent record appends:
+  - record append-at-least-once
+  - may have padding and duplicates between records, rare record duplicates
+  - Reader can identify and discard extra padding and record fragments using checksums
+  - To remove duplicate records, filter using unique ID in the records
+
+#### Leases and Mutation Order
+
+- Each mutation is performed on all the chunk's replicas
+- Lease:
+  - the master grants a chunk lease to a replica (the primary)
+  - The primary picks a serial order for all mutations to the chunk
+  - All replicas follow this order when applying mutations
+- Lease has a timeout, but can be extended indefinitely
+- Lease grant and request are piggybacked on HeartBeat msgs
+- Lease minimizes management overhead of the master
+
+<u>Control Flow Steps:</u>
+
+1. Client asks master for primary and secondary replica locations
+2. Client pushes data to all replicas, wait for all acks
+3. Client sends primary a request to write
+4. Primary serializes mutations, apply to local
+5. Primary sends the same order to all secondaries, wait for all acks
+6. Primary return to client as success
+
+#### Data Flow
+
+- Control and data flows are separated
+- Data is pushed linearly along a chain (instead of a tree) of chunkservers in a pipelined fashion
+  - avoid network bottlenecks
+  - avoid high-latency links
+  - fully utilize network bandwidth
+  - minimize latency
+- Push to the machine closest to you, starts immediately after receiving some data
+
+#### Atomic Record Appends
+
+- Client only specifies the data, GFS appends it to the file at least once atomically at an offset determined by the GFS
+- Add additional logic to the write control flow:
+  - after client send record append to the primary, the primary checks if appending the record will exceed the maximum size
+    - if no, append at the current end of file. Done.
+    - if yes, pad the current chunk, create a new chunk, and ask the client to try again
+- After successful record append,
+  - does not guarantee all replicas are bytewise identical
+  - guarantee that data is written at least once as an atomic unit
+    - the data has to be written to the same offset on all replicas of some chunk
+    - all replicas are at least as long as the end of record
+    - any future record will be assigned a higher offset
+- Consistency guarantee:
+  - The region in which a successful record append operations is defined
+- Advantages:
+  - No synchronization (e.g. distributed lock manager) is needed
+
+#### Snapshot
+
+- Use copy on write
+- When snapshot, 
+  - Need to revoke all leases or wait for them to expire. Ensure subsequent writes need to contact master for new lease holder
+  - Log the snapshot operation to disk
+  - Apply to in-memory state by duplicating the metadata for the source file
+  - The newly created snapshot files reference to the original chunks
+- When client first writes,
+  - master picks a new chunk and asks all replicas to replicate locally, change pointer to the new chunk, then write
+
+#### <u>Master Operations</u>
+
+#### Namespace Management and Locking
+
+- Allow multiple operations to be active
+- Use locks over regions of the namespace to ensure serialization
+- GFS represents its namespace as a lookup table mapping full pathnames to metadata
+- With prefix compression, can fit in memory
+- Each node in the namespace tree has a lock
+  - Acquire read lock on directory if modifying files in it
+  - Acquire write/read lock on files as needed
+- Locks are allocated lazily (create lock when acquired) to reduce storage overhead
+
+#### Replica Placement
+
+- Multi-level distribution: machine level, rack level
+  - maximize data reliability and availability
+  - maximize network bandwidth utilization
+
+#### Creation, Re-replication, Rebalancing
+
+<u>How to choose a chunkserver to add replica</u>
+
+1. A chunkserver that has below-average disk space utilization
+2. A chunkserver that has a limited number of "recent" creations
+3. Replicate across racks
+
+#### Garbage Collection
+
+- Lazy garbage collection:
+  - when a file is deleted, the master logs the deletion immediately, but the file is just renamed to a hidden name without actually deleting it
+  - During master's regular scan of  the file system namespace, it removes any hidden files, and its in-memory metadata is erased, so severs the links to its chunks
+  - During a similar scan of the chunk namespace, the master identifies orphaned chunks and erase metadata for those chunks
+  - During HeartBeat messages, master and chunkserver exchange chunk information and chunkserver can now delete such chunks
+- Advantages of lazy over eager:
+  1. simple and reliable in a large-scale distributed system where component failures are normal: provides a uniform and dependable way to clean up any replicas now known to be useful
+  2. Merges storage reclamation into regular background activities: done in batches, cost is amortized, done when master is free
+  3. delay in deleting provides the option to undo accidental, irreversible deletion
+- Disadvantage and mitigation:
+  1. Hinder users from actively manage storage space when it is limited
+     - provide option to expedite deleting such files
+
+#### Stale Replica Detection
+
+- The master tracks chunk version number to distinguish up-to-date and stale replicas
+- Whenever the master grants a new lease, it increments version number and notify all replicas
+  - unavailable replicas become stale now
+- Master detects stale replicas when chunkservers report its chunks and version numbers
+- Master removes stale replicas during garbage collection, and before that, takes it as non-existing
+- Master sends client/chunkserver chunk version number to verify up-to-date chunks
+
+#### Fault Tolerance and Diagnosis
+
+<u>Fast Recovery</u>
+
+- Master and chunkservers restart in seconds
+- Does not distinguish normal or abnormal termination
+
+<u>Chunk Replication</u>
+
+- Chunk is replicated on multiple chunkservers across racks
+- May use parity or erasure codes for cross-server redundancy
+  - good for append and read workload (instead of small random writes)
+
+<u>Master Replication</u>
+
+- Master state is replicated for reliability
+  - Including operation log and checkpoints
+
+#### Data Integrity
+
+- Use checksumming to detect corruption and use replicated chunks for correction
+- Each chunkserver needs to independently verify its own copy because it is not practical to compare with other replicas
+- Checksum is stored like a log (persistent)
+- Checksumming has little effect on read performance, only a small amount of extra data for verification
+  - no I/O required
+- Checksum is optimized for append: incrementally update the checksum for the last partial checksum block
+  - detect corruption at reads
+- Chunkserver verifies inactive chunks during idle periods
+
+#### Diagnostic Tools
+
+- Diagnostic logging: log major events and all RPC requests and replies
+- Minimal cost: sequential and asynchronous
+
+#### Questions
+
+1. What problem does this paper address?
+   - How to design a storage system with mostly append workload, large files, and failures are normal?
+2. What is the author's main insight?
+   - A single master and multiple chunkservers
+   - Add atomic record append operation
+   - Large chunk size
+   - Use lease for consistency
+3. What are the paper's key strengths?
+   - Optimized for given Google workload
+   - simple structure: highly scalable, fault tolerant
+4. What are the paper's key weaknesses?
+   - All metadata in memory still possible nowadays?
+   - Master single point of failure?
+
+## 143 - Bigtable
 
 #### Background
 
-- 
+- Bigtable is a distributed storage system that is used to manage structured data
+  - reliably scale to petabytes of data
+  - thousands of machine
+- Goals:
+  - wide applicability, scalability, high performance, high availability
+- Support a variety of workloads: throughput-oriented batch-processing jobs or latency-sensitive serving of data
+- Provides clients with a simple data model that supports dynamic control over data layout and format
+  - clients can control locality of their data
+
+#### Data Model
+
+- Bigtable is a sparse, distributed, persistent multi-dimensional sorted map
+- The map is indexed by a row key, a column key, and a timestamp
+- Each value is an uninterpreted array of bytes
+
+<img src="/Users/hanminglu/Library/Application Support/typora-user-images/image-20210728172419027.png" alt="image-20210728172419027" style="zoom:50%;" />
+
+<u>Row</u>
+
+- Row keys are arbitrary strings
+- Every read or write of data under a single row key is atomic (regardless of columns)
+- Maintain data in lexicographic order by row key
+- Tablet: row range
+  - row range is dynamically partitioned, each is called a tablet
+  - Tablet is the unit of load balancing and distribution
+  - Reads of short row ranges are efficient and require less communications
+- Clients can select their row keys to store data with locality together
+
+<u>Column</u>
+
+- Column family: column keys are grouped into sets called column families, which is the unit of access control
+- All data stored in the same column family is usually the same type
+- Intention is to keep the number of column families small; the number of columns can be large
+
+<u>Timestamp</u>
+
+- Each cell in the Bigtable can contain multiple versions of the same data
+- Versions are indexed by timestamp
+- Old cell versions can be garbage collected as desired
+
+#### API
+
+- API provides functions for creating, modifying, and deleting tables and column families
+- Can change cluster, table, and column family metadata
+- Operations are on individual row keys
+
+#### Building Blocks
+
+- Use GFS to store log and data files (SSTable files)
+  - SSTable provides a consistent, immutable, ordered map from keys to values
+- Use scheduler to schedule jobs involved in BigTable serving
+- Use Lock service for master election, location bootstrapping
+- MapReduce: used to read/write BigTable data
+
+#### Master, Tablet Server, Client
+
+- One master server, many tablet servers. Tablet servers can be dynamically added or removed
+
+<u>Master</u>
+
+- Master is responsible for:
+  - assigning tablets to tablet servers
+  - detecting the addition and expiration of tablet servers
+  - balancing tablet server load
+  - garbage collection of files in GFS
+  - handle schema changes (e.g. table and column family operations)
+
+<u>Tablet Server</u>
+
+- Tablet server is responsible for:
+  - manage a set of tablets (row ranges)
+  - Handle read and write requests to the tablet it is responsible for
+  - Split tablet if it is too large
+
+<u>Client</u>
+
+- Client talks directly to tablet server for data
+- Use chubby to find tablet location
+
+#### Architecture Design
+
+<u>How to get Tablet Location</u>
+
+- Three-level hierarchy to store tablet location information
+  - Chubby file
+  - Root tablet
+  - Metadata tablet
+- Steps:
+  1. The client contacts Chubby for the root tablet location
+  2. Contacts root tablet server too get location of all METADATA tablets
+  3. Contact METADATA tablet server to get location of its user tablet
+- The client caches METADATA tablet locations to amortize communication cost
+
+<u>Tablet Assignment</u>
+
+- Persistent state of a tablet is stored in GFS (instead of on tablet server)
+  - Tablet server is responsible for serving requests
+  - Modify persistent state in GFS if needed
+  
+- Each tablet is assigned to one tablet server at a time
+  - master keeps track of the set of live tablet servers and their assigned tablets
+  
+- Master uses Chubby to keep track of tablet servers:
+
+  - each tablet server acquires a uniquely-named file in a Chubby directory in order to serve
+  - When a tablet server stops to server, it releases the lock so the master can reassign its tablets
+  - When a tablet server loses the lock due to failure, it attempts to reacquire the lock and restart; if the file is deleted, the tablet server can no longer serve and will terminate
+
+- The existing sets of tablet changes if:
+
+  1. table created or deleted
+  2. multiple tablets merged into one
+  3. one tablet split into two
+
+  - Master initiates 1 & 2; for 3, tablet server notifies master
+
+<u>Master Assignment</u>
+
+- When master starts, it does:
+  1. grab a unique master lock in Chubby
+  2. Scans server directory in Chubby to find active tablet servers
+  3. Ask tablet servers for their assigned tablets
+  4. Master scans the METADATA table to learn the set of tablets. Add to unassigned tablets if found
+- Master kills itself if its Chubby session expires
+
+#### Tablet Serving
+
+- Persistent state of tablets is stored in GFS
+- Updates are committed to a commit log that stores redo records, among updates:
+  1. Recently updates are in memory in a sorted buffer called memtable
+  2. older updates are stored in a sequence of SSTables
+- Client write operation:
+  1. server checks write request is well-formed and authorized
+  2. write to commit log
+  3. insert to memtable
+- Client read operation:
+  1. server checks well-formed and authorized
+  2. merge SSTables and the memtable (efficient since both are sorted)
+  3. read on the merged view
+
+<u>Tablet Recovery</u>
+
+- Get the list of SSTables that comprise a tablet from METADATA table
+- Get a set of redo pointers into any commit logs that may contain data for the tablet
+- Reconstruct tablet by reading all SSTables into memtable and then apply all commits
+
+#### Compactions
+
+<u>Minor compaction:</u>
+
+- when memtable size reaches a threshold, convert it into an SSTable, write to GFS, initiate a new memtable
+- Two goals:
+  1. Shrink memorage usage of the tablet server
+  2. during tablet recovery, reduce the amount of data read from commit log
+
+<u>Merging Compaction</u>
+
+- Reads the contents of a few SSTables and the memtable, merge into a new SSTable
+- Bound the number of SSTables 
+
+<u>Major Compaction</u>
+
+- Rewrites all SSTables into exactly one SSTable
+- Some deleted data may still be there by overlapping it with a delete operation
+- use major compaction to reclaim resources used by deleted data
+- happen periodically in the background
+
+#### Refinements/Optimizations
+
+<u>Locality Group</u>
+
+- Group multiple family columns together into a locality group
+- In each tablet, a separate SSTable is used to store values in a locality group
+- More efficient reads, don't read unnecessary info
+
+<u>Compression</u>
+
+- Client has the option to compress their SSTables (per-block basis) for a locality group
+- Client can choose format
+- Very good compression ratio since:
+  - All pages from one host are stored close to each other
+  - Locality group has similar data
+  - multiple versions of the same value
+
+<u>Caching for read performance</u>
+
+1. Scan cache that caches key-value pairs: temporal locality
+2. Block cache that cache SSTable blocks: spatial locality
+
+<u>Bloom Filters</u>
+
+- For read:
+  - ask whether an SSTable might contain any data for a specific row/column pair
+
+<u>Commit Log</u>
+
+- Use one commit log per tablet server (Instead of one commit log per tablet)
+- More complicated recovery:
+  - Sort log by tablet, then each new tablet server needs to do one contiguous read
+
+#### Questions
+
+1. What problem does this paper address?
+   - How to design a general-purpose data-center distributed storage system for structured data that is highly scalable, high-performance, and flexible to many applications?
+2. What is the author's main insight?
+   - distributed multi-level mapping
+   - Use building blocks wisely
+   - Fully utilize client-specifiable locality
+3. What are the paper's key strengths?
+   - General-purpose, highly scalable, high-performance, highly available
+4. What are the paper's key weaknesses?
+   - Need clients to be educated to utilize locality features
+
+## 144 - MapReduce
+
+#### Programming Model
+
+<u>Map</u>
+
+- Input: a set of input key/value pairs
+- Output: a set of intermediate key/value pairs
+- MapReduce groups together all intermediate values with same intermediate key, pass them to Reduce
+- Map invocations are distributed across multiple machines by partitioning input data into a set of splits; Each split can be processed in parallel on different machines
+
+<u>Reduce</u>
+
+- Input: an intermediate key and a set of values for the key
+- Output: merge these values to produce a smaller set of values
+- Intermediate values are supplied to Reduce with an iterator
+- Distributed by partitioning the intermediate key space into multiple partitions
+
+#### Execution Overview
+
+1. MapReduce library splits input file into M splits. Start programs on each machine in the cluster
+2. One program is the master, all others are workers. Master assigns map and reduce jobs to each worker.
+3. Map worker reads assigned input split, parse key/value pairs and send to Map function. Output intermediate kv pairs to memory.
+4. Buffered pairs are partitioned by intermediate keys. Stored in local disk. Send disk location to master. Master sends location to reduce workers.
+5. Reduce worker learns the locations, use RPC to transfer intermediate data from map worker's local disk.
+6. Reduce worker sorts intermediate keys, group values with the same key together
+7. Reduce worker pass each unique intermediate key and its values to Reduce function. Append output to final output file.
+8. After all map and reduce jobs are completed, the master wakes up the program.
+
+#### Master Data Structure
+
+- For each map and reduce job, the master keeps its state and its assigned worker
+- The master stores the location of map worker's local disk, for each map job
+
+#### Fault Tolerance
+
+<u>Worker Failure</u>
+
+- Master periodically ping worker to ensure they are alive
+- If some worker is dead, 
+  - reschedule both completed and in-progress map jobs (since result lost)
+  - reschedule only in-progress reduce jobs
+- Reduce workers are notified if any map job is re-executed
+
+<u>Master Failure</u>
+
+- Periodically store master's state in checkpoints
+- Restart from checkpoint
+
+<u>Deterministic vs. Non-Deterministic</u>
+
+- If deterministic map and reduce functions, then the output is the same as a non-faulting sequential execution
+- If non-deterministic, the second reduce function may produce a different result because its intermediate input may be different (due to failed map tasks)
+
+#### Locality
+
+- GFS stores files on different machines
+- MapReduce schedule map jobs considering its input file's location
+  - exploit locality of input files and map workers
+
+#### Map and Reduce Task Granularity
+
+- Choose larger M and R than the number of machines in the cluster
+- Run many different tasks improve load balancing and recovery speed
+
+#### Straggler Handling
+
+- There are cases where a specific machine is unusually slow
+- The master schedules backup executions for in-progress tasks
+
+#### Questions
+
+1. What problem does this paper address?
+   - A distributed system for large-scale, data-intensive, parallel data processing on community clusters, simple abstraction, handle parallel computing, job scheduling, fault tolerance.
+2. What is the author's main insight?
+   - A simple map and reduce abstraction
+   - Can utilize machines on a cluster to do parallel jobs
+   - A centralized master design
+   - fault tolerance on workers
+3. What are the paper's key strengths?
+   - Easy to use
+   - Can distribute parallel jobs to machines
+   - fault tolerance on workers
+4. What are the paper's key weaknesses?
+   - Failure handling for master is not discussed
+
+## 145 - Spark
+
+#### Limitation of MapReduce
+
+- MapReduce does not support one workload well:
+  - Reuse a working set of data across multiple parallel operations
+  - e.g. iterative ML algorithms, interactive data analysis tools
+
+#### Key Idea behind Spark
+
+- Cache repeatedly used working dataset to reduce the overhead of fetching from disk everytime
+
+#### Programming Model
+
+- Developers 
+  1. write a driver program that implements the high-level control flow of their application
+  2. launch various operations in parallel
+
+<u>Resilient Distributed Dataset (RDD)</u>
+
+- A resilient distributed dataset is a read-only collection of objects partitioned across a set of machines, that can be rebuilt (from its parent) if a partition is lost 
+- The elements of an RDD does not need to exist in persistent storage
+  - a handle to an RDD contains enough information to compute it starting from data in reliable storage
+- Datasets will be stored as a chain of objects capturing the lineage of each RDD, each object contains a pointer to its parent and information about how the parent was transformed
+- RDD can always be reconstructed if nodes fail:
+  - its partitions are re-read from their parent datasets and eventually cached on other nodes
+
+- To construct a RDD:
+  - from a file in a shared file system
+  - Divide an array of files
+  - Transform an existing RDD with functions
+  - Change the persistence of an existing RDD between cache and save modes
+
+<u>Parallel Operations</u>
+
+- Reduce: combine dataset elements
+- Collect: send all elements to the master
+- foreach: iterate through each element with a function
+
+#### Questions
+
+1. What problem does this paper address?
+   - How to develop a large-scale data-intensive parallel distributed system that supports a fast reusing working set?
+2. What is the author's main insight?
+   - Use caching to store dataset in memory instead of disk
+   - Use lineage & parent information to reconstruct lost in-memory data from persistent storage
+3. What are the paper's key strengths?
+   - Utilize memory to reduce the cost of reading from disk again and again when reusing a working set
+4. What are the paper's key weaknesses?
+   - More practical for batch workloads instead of interactive workloads
+
+## 146 - MPI, RPC, and DSM as Communication Paradigms for Distributed Systems
+
+#### Background
+
+- Ease to use: DSM < RPC < MPI
+- Complexity added to OS: MPI < RPC < DSM
+
+#### Message Passing
+
+- Message passing is the basis of most interprocess communication in distributed systems
+- MP is at the lowest level of abstraction
+- Requires application programmer to be able to identify expected destination process, source process, message, and data types
+
+<u>Syntax</u>
+
+- Simplest primitives:
+  - send(receiver, message, sender(optional))
+  - receive(sender, message)
+- send requires to know the receiver process and message data
+- receive requires to know the expected sender and provide a storage buffer for the message
+
+<u>Blocking vs. Non-blocking</u>
+
+- Blocking is easier for programming and debugging, but CPU is idle when blocked. More often chosen.
+- Non-blocking allows concurrent execution when sending, but need interrupt to be informed when message is sent and message buffer is cleared
+
+<u>Buffered vs. Unbuffered Messages</u>
+
+- Unbuffered: send directly to the receiving process. Problem when send() is called before receive() because the address in send does not refer to an existing process.
+- Buffered: saved in a buffer until a process is ready to receive them. Messages are queued in a buffer waiting until requested by the receiver.
+
+<u>Reliable vs. Unreliable send</u>
+
+- Unreliable: after sending the message, does not expect acknowledge nor retransmission if message is lost
+- Reliable: wait for acknowledgement and will retransmit if message lost.
+- Lost message handled either:
+  1. OS retransmission
+  2. OS notifies sender
+  3. Sender detects it itself
+
+<u>Direct vs. Indirect</u>
+
+- Indirect: messages are sent to a port, then receiver receives it from the port
+- Direct: message sent direct to the process itself, named explicitly in the send
+
+<u>Fixed vs. Variable Message Size</u>
+
+- A tradeoff between implementation difficulty and programming complexity
+
+<u>Passing data by value/reference</u>
+
+- Mostly pass by value because the processes execute in separate address space
+
+<u>MP Difficulty</u>
+
+- Application programmer needs to control data movement at the granularity of processes, control the synchronization
+
+#### Remote Procedure Call
+
+- MP leaves the application programmer with the burden of explicit control of data movement
+- RPC increases the level of abstraction and provides semantics similar to a local procedure call
+
+<u>Syntax</u>
+
+- Syntax of RPC
+  - call procedure_name(value_arguments; result_arguments)
+  - receive procedure_name(in value_parameters; out result_parameters)
+  - reply(caller, result_parameters)
+- The client process blocks at the call() until the reply is received
+- The remote procedure is the server processes which has already begun execution on a remote machine. Receive() blocks until it receives a message from the sender. The server reply() after finishing the task
+
+<u>Semantics</u>
+
+- Semantics of RPC is the same as a local procedure call: the calling process calls and passes arguments to the procedure, and it blocks while the procedure executes. When the procedure completes, it return results to the calling process.
+- For instance, 
+  - The execution of the call() generates a client stub which marshals the arguments into a message and sends the message to the server machine
+  - On the server machine, the server is blocked waiting for message. After receiving the message, a server stub is generated and extracts the parameters from the message, and pass to the procedure
+
+<u>Binding</u>
+
+- binding is needed to provide a connection between the name used by the caller and the location of the remote procedure
+- Implemented by:
+  - using OS, storing a static or dynamic linker between the procedure name and its location on another machine
+  - suing procedure variables, which links to the procedure location
+
+<u>Communication Transparency</u>
+
+- The user should be unaware of using a remote procedure call (instead of local)
+- Three difficulties:
+  1. Failure detection and correction due to communication and site failures: can result in inconsistent data because of partially completed processes, leave to programmer to deal with
+  2. Parameter passing: only pass value parameters
+  3. Exception handling: use available exceptions
+
+<u>Concurrency</u>
+
+- Since call and receive are blocking, single-threaded machines can cause significant delays
+- Use mechanisms to execute calls concurrently
+
+<u>Heterogeneity</u>
+
+- Use a static interface declaration of remote procedures to allow communication on different OS or language
+
+<u>Summary</u>
+
+- RPC abstracts away communication and transmission (compared to MP)
+- True transparency is hard and unsolved
+
+#### Distributed Shared Memory
+
+- Distributed Shared Memory is memory which, although distributed across machines over a network, gives the appearance of being centralized
+- The memory is accessed through virtual addresses, so processes are able to communicate by directly writing and reading data which are directly addressable
+- DSM relieves application programmers from concerns of message passing
+- Higher complexity for OS as it still needs to send messages between machines to read locally unable memory, and maintain replicated memory consistency 
+
+<u>Syntax</u>
+
+- Same as a normal centralized memory multiprocessor:
+  - read(shared_variable)
+  - write(data, shared_variable)
+- The OS locates the variable through its virtual address
+
+<u>Structure and Granularity of the Shared Memory</u>
+
+- The memory can be in the form of:
+  1. an unstructured linear array of bytes
+  2. structured forms of objects
+- Fine or Coarse grained:
+  - data should be shared at bit, word, or page level
+  - coarse-grained: page-based distributed memory, where paging takes place over the network instead of to disk. Offer sequential consistency at the cost of performance.
+  - fine-grained: higher network traffic
+
+<u>Consistency</u>
+
+- If one copy, then a request for a non-local piece of data results in a trap, causes OS to fetch it remotely. If a piece of data is requested by multiple machines, thrashing happens.
+- If multiple copies, consistency among replicated data becomes the concern:
+  - Consistency model determines the condition under which memory updates are propagated
+  - Cannot just use cache coherence protocol because its strict consistency models cause too much network traffic
+  - Stricter models result in more network traffic, thus worse performance
+  - Weaker models result in less network traffic, thus better performance, but makes the programming model more complicated. Weaker consistency is a concern of OS designers.
+
+<u>Synchronization</u>
+
+- Shared data must be protected by synchronization primitives
+- Three methods:
+  - Managed by a synchronization manager
+  - Responsibility of the programmer
+  - Responsibility of the system developer (implicit at application level)
+
+<u>Scalability</u>
+
+- Scales better than tightly-coupled shared memory multiprocessors
+- Limited by physical bottlenecks (e.g. buses)
+
+<u>Heterogeneity</u>
+
+- Hard to accommodate different machines, languages, or OS at the page level
+
+![image-20210802125128246](/Users/hanminglu/Library/Application Support/typora-user-images/image-20210802125128246.png)
+
+## 147 - Ray
+
+#### Requirements
+
+1. Fine-grained, heterogeneous computations
+   - milliseconds to hours
+   - heterogeneous hardware
+2. Flexible computation model
+   - Both stateless and stateful computations
+3. Dynamic execution
+   - the order of computation finish is not known in advance
+   - next executions are determined by the execution
+
+#### Programming Model
+
+<u>Task</u>
+
+- Stateless and side-effect free
+- Operate on immutable objects
+- outputs are determined solely by their inputs
+
+<u>Actor</u>
+
+- Stateful execution
+- Operate on mutable objects
+- Given a handle to access the actor in the future
+
+![image-20210802135703369](/Users/hanminglu/Library/Application Support/typora-user-images/image-20210802135703369.png)
+
+#### Computation Model
+
+- Dynamic task graph computation model
+  - execution of both remote functions and actor methods are triggered by the system when their inputs are available
+  - computation graph is constrcuted from a user program
+- Two types of nodes:
+  - data objects
+  - remote function invocations (tasks)
+- Three types of edges
+  - data edges: data dependencies
+  - control edges: computation dependencies
+  - stateful edges: connect stateful execution on the same actor
+
+#### Architecture
+
+<u>Application Layer</u>
+
+- A driver
+- Stateless workers: execute stateless tasks by the driver or other workers
+- Stateful actor: execute on the method it exposes
+
+<u>Global Control Store</u>
+
+- Maintains the entire control state of the system
+  - lineage information
+- A key-value store with pub-sub functionality
+- Sharding to achieve scale and per-shard chain replication
+- Store object metadata in the GCS rather than in the scheduler, decoupling task dispatch and task scheduling
+  - because involving the scheduler in each object transfer is prohibitively expensive
+
+<u>Bottom-Up Distributed Scheduler</u>
+
+- Two-level hierarchical scheduler
+  - global scheduler
+  - local scheduler
+- Each node's local tasks are tried to schedule locally first
+- Only send to global scheduler if:
+  - local is overloaded
+  - local resource is insufficient to schedule the task
+
+- Global scheduler determines which node using:
+  - estimated queue time
+  - estimated input transfer time
+
+<u>In-Memory Distributed Object Store</u>
+
+- Store the inputs and outputs of every task
+- Implement object store with shared memory
+  - allow zero-copy data sharing between tasks running on the same node
+  - Immutable data only
+- non-local inputs are replicated to the local object store before execution
+- Outputs are written to the local object store
+- High throughput due to in-memory operations
+
+#### Questions
+
+1. What problem does this paper address?
+   - A highly-scalable computation framework that handles heterogeneous requirements in a) stateful vs. stateless; b) short latency-sensitive vs. batch computation; c) 
+2. What is the author's main insight?
+   - A GCS storing lineage information, data object location
+   - A bottom-up scheduler
+   - An in-memory distributed object store
+   - lineage-based fault tolerance with replication-based GCS
+3. What are the paper's key strengths?
+   - A general-purpose RL framework that supports training, simulation, etc.
+   - Satisfy both task parallel and actor stateful execution
+   - Highly scalable with sharded GCS, distributed in-memory object store, hierarchical scheduling
+4. What are the paper's key weaknesses?
+   - Unable to use application-optimized scheduler
+
+## 148 - A Comparison of Approaches to Large-Scale Data Analysis
+
+#### Background
+
+- MapReduce and parallel database systems can serve the same set of computation requirement through different approaches
+- What are the differences between MR and parallel database approaches?
+
+#### Overview
+
+<u>MapReduce</u>
+
+- Use a central scheduler to schedule Map and Reduce tasks to nodes
+- Run M Map tasks and R Reduce tasks
+- A Map task takes a partition (a set of key/value pairs) of input file and execute a user-defined Map function, produces a set of intermediate key/value pairs, and split them into R disjoint buckets, stored in local disk storage
+- Each Reduce task takes its part of bucket from all M Map tasks, apply a user-defined Reduce function that combines intermediate outputs based on key, output a part of final output, stored in global storage
+
+<u>Parallel DBMSs</u>
+
+- Standard relational tables (transparent physical location)
+- Data are partitioned over cluster nodes
+- SQL
+- Join processing: T1 joins T2
+  1. if T2 is large, then hash partition T1 and T2
+  2. send partitions to different machines
+  3. (similar to split-copy in MapReduce)
+- Query Optimization
+- Intermediate tables not materialized by default
+
+#### Architecture Differences
+
+![image-20210803142937626](/Users/hanminglu/Library/Application Support/typora-user-images/image-20210803142937626.png)
+
+<u>Schema Support</u>
+
+- MapReduce: 
+  - More flexible, good for one application, bad for multiple applications sharing one data set
+- Parallel DBMS
+  - Relational schema required, good for multiple applications sharing
+
+<u>Programming Model & Flexibility</u>
+
+- MapReduce:
+  - low level
+  - very flexible
+- Parallel DBMS:
+  - SQL
+  - user-defined functions, stored procedures, user-defined aggregates
+
+<u>Indexing</u>
+
+- MapReduce:
+  - No native index support, can implement their own but hard to share
+- Parallel DBMS:
+  - Hash/b-tree indexing well supported
+
+<u>Execution Strategy & Fault Tolerance</u>
+
+- MapReduce:
+  - Intermediate results are saved to local files
+  - If a node fails, run the node-task again on another node
+  - Large number of disk seeks at mapper machine during intermediate result transfer
+- Parallel DBMS:
+  - Intermediate results are pushed across network
+  - If a node fails, the entire query needs to run again
+
+<u>Avoiding Data Transfer</u>
+
+- MapReduce:
+  - locate Map close to data
+- Parallel DBMS:
+  - lots of optimization
+  - e.g. where to perform filtering
+
+<u>Node Scalability</u>
+
+- MapReduce:
+  - 10000's of commodify nodes
+  - 10's of Petabytes of data
+- Parallel DBMS:
+  - <100 expensive nodes
+  - Petabytes of data
+
+<u>Setup and Configuration</u>
+
+- MapReduce:
+  - easy
+- DBMS:
+  - hard to configure
+
+<u>Ease of Use</u>
+
+- More familiar with language used by MapReduce compared to SQL
+
+<u>Performance</u>
+
+- DBMS is faster than MR because:
+  1. Indexing: B-tree indices to speed the execution of selection operations
+  2. Column store: column oriented storage
+  3. Compression: aggressive compression and operate on compressed data
+  4. Parallel algorithm for querying large amount of data
+
+#### Questions
+
+1. What problem does this paper address?
+   - What's the differences between approaches of MapReduce and Parallel DBMS for large-scale data-intensive computation?
+2. What is the author's main insight?
+   - For the size of 100 nodes, Parallel DBMS has a better performance due to indexing, storage schema, compression, parallel algorithm.
+   - MapReduce is easier to use, may perform better in a larger cluster with commodity hardware
+3. What are the paper's key strengths?
+4. What are the paper's key weaknesses?
+
+## 149 - Lottery Scheduling
+
+#### Some Scheduling Schemes
+
+- First come first serve
+- Round robin
+- Priority system
+  - cons: highest priority always wins, starvation risk. Priority inversion: high-priority jobs can be blocked behind low-priority jobs
+- Multi-level feedback scheduling
+  - cons: fairness only over very long term
+
+#### Lottery Scheduling
+
+- Proportional-share scheduling algorithm
+- Give each job its proportional number of tickets
+- On each time slice, pick a ticket and give owner the resource
+- On average, resource fraction (CPU time) is proportional to number of tickets given to each job
+
+<u>To Assign Tickets</u>
+
+- Priority determined by the number of tickets each process has
+- To avoid starvation, each job gets at least one ticket
+
+#### Fairness of Lottery Scheduling
+
+- Probabilistically fair
+- Advantage over strict priority scheduling: 
+  - behaves gracefully as load changes: adding or deleting jobs affect all jobs proportionally
+- Mostly fair, but short-term unfairness is possible (see stride scheduling)
+
+#### Ticket Transfer
+
+- If a job depends on another job, it gives all its tickets to the other job
+  - solves priority inversion problem
+
+#### Compensation Tickets
+
+- Compensate for resources assigned but not used (yield)
+- Ticket inflate proportional to the amount of time you did not use, until next time you win
+
+#### Questions
+
+1. What problem does this paper address?
+   - A scheduling scheme that provides fair share, avoids priority inversion, simple and easy-to-use?
+2. What is the author's main insight?
+   - Lottery-based scheduling, each job gets a proportional number of tickets
+   - Hand over tickets to another job if you depend on it to finish
+3. What are the paper's key strengths?
+   - Simple
+   - Solves priority inversion
+   - Fairness in the big picture
+4. What are the paper's key weaknesses?
+   - ticket inflation
+   - short-term unfairness
+
+## 150 - Dominant Resource Fairness
+
+#### Max-Min Fairness
+
+1. Sort resource requirement in an increasing order
+2. Give the lowest demand first, with min(Capacity/requesters, its demand)
+3. Give the extra resource to other resources if any left
+
+- Any person is worse if they lie about their demand
+
+- Weighted Max-Min fairness: takes weights into consideration
+
+#### Why (Weighted) Fair Sharing?
+
+- Higher priority gives higher resource
+- Share guarantee of at least C/n
+- Strategy-proof
+- Isolation: Users cannot affect each other
+
+#### Dominant Resource Fairness (DRF)
+
+- Dominant resource: the resource that a user wants the highest proportion (e.g. 1/2 is greater than 4/100)
+- Different users may have different dominant resources
+- DRF applies max-min fairness across users' dominant resources
+- DRF maximizes the smallest dominant share in the system, then the second-smallest, and so on
+
+<u>Steps</u>
+
+1. DRF picks the user with the lowest dominant share(max{utilization rate}), run one of its tasks
+2. Update the dominant share, consumed resources
+3. Repeat
+
+- e.g.
+
+![image-20210803174509311](/Users/hanminglu/Library/Application Support/typora-user-images/image-20210803174509311.png)
+
+<u>Characteristics</u>
+
+- O(log n) time per decision, n is the number of users
+- Need to determine demand vector for each task
+
+<u>Weighted DRF</u>
+
+- Modify dominant share calculation to max{utilization rate / weight}
+
+#### Properties of DRF
+
+1. Strategy-proof: no better to lie about its demand
+2. Share guarantee: each user is guaranteed to have at least C/n share
+3. Envy-free: no task wants to swap with another task's resources
+4. Pareto Efficiency: it is not possible to give extra resource to any user without hurting at least one other user
+5. Single-resource fairness: if only one resource, then max-min
+6. Bottleneck fairness: if all tasks have one dominant resource, than it is shared according to max/min fairness
+
+#### Questions
+
+1. What problem does this paper address?
+   - How to schedule heterogeneous resources to users with heterogeneous demand in a fair way?
+2. What is the author's main insight?
+   - Determine a user's dominant resource and schedule tasks based on it
+3. What are the paper's key strengths?
+   - Strategy-proof, share guarantee
+4. What are the paper's key weaknesses?
+   - If the number of users is too many, long scheduling time
+
+## 151 - Stride Scheduling/Completely Fair Scheduling
+
+#### Summary
+
+- A deterministic version of lottery scheduling
+- Every thread has a "stride" that is inversely proportional to its priority
+
+<u>Steps:</u>
+
+1. Initially, everyone's "pass" is equal to its "stride"
+2. Every time slice, choose the thread with the lowest pass
+3. After a thread is run, increment its "pass" by "stride"
+4. repeat step 2
+
+<u>Advantages over Lottery scheduling:</u>
+
+- deterministic variance from the ideal ratio
+- short-term stability
+
+## 152 - Mach
+
+#### Microkernel
+
+<u>Monotholic Kernel</u>
+
+- Running entirely in the kernel mode
+
+<u>Microkernel</u>
+
+- Modular design that separates OS into two parts:
+  1. Control basic hardware resources (i.e. microkernel), responsible for low-level process management, handle message passing, interrupt handling
+  2. Control unique characteristics of the environment for applications, such as file system, memory management.
+
+- Advantages:
+  1. Portability: microkernel as a narrow waist that provides hardware independence for other parts of OS and application
+  2. Extensibility & customization: environments can evolve independent of microkernel
+  3. Functionality & performance for kernel: simpler functionality so easier to parallelize, distribute, and secure
+  4. Flexibility: system environment can run remotely
+  5. Real-time: kernel does not need to hold long locks & OS environment is preemptable, can provide real-time support
+  6. Fault Isolation
+  7. Security
+  8. More reliable (less code in kernel)
+
+#### Mach Kernel Features
+
+<u>Process and thread management</u>
+
+- Resources are allocated to processes, which consists of an address space and communication access to system
+- Thread performs computation and consumes its process' resources
+- Threads are scheduled by the Mach kernel
+- User space programs can control scheduling policy
+
+<u>Interprocess Communication</u>
+
+- Interprocess communication is implemented exclusively through ports (similar to a handle)
+- Processes, threads, memory objects, and Mach process services are all manipulated by sending messages to ports that represent those objects
+- The port abstraction can be accessed through network
+
+<u>Memory Object Management</u>
+
+- Memory objects can represent anything that makes sense to access through memory references (e.g. I/O devices, disk I/O)
+- Processes use ports to interact with memory objects
+- Process address space is a collection of mappings from linear addresses to offsets within memory objects
+
+<u>System Call Redirection</u>
+
+- Mach kernel allow redirecting certain system calls or traps back to the calling process to handle
+  - Require one kernel entry and one kernel exit
+- Emulation library is inherited by child processes
+- Exceptions can also be redirected
+
+<u>Device Support</u>
+
+- Each device is represented as a port, can talk to it from threads
+
+<u>User Multiprocessing Support</u>
+
+- Allow user-level OS/applications to use multithreading without involving kernel
+
+<u>Multicomputer Support</u>
+
+- All communication happens through IPC (via port), which can be done through networks
+
+#### Implementing OSes on Mach
+
+- Key idea: treat OSes like application programs
+- Three approaches:
+  1. Native OS systems
+  2. Large granularity server systems
+  3. Small granularity server systems
+
+<u>Native OS systems</u>
+
+- key idea: Put everything that a kernel would handle into an emulation library, where a system call will be redirected to
+- Allows most of original system calls to execute without change
+- Emulation library responsible for system calls and virtualizing access to hardware devices
+- Similar performance to other UNIX implementations
+
+<u>Large Granularity Server Systems</u>
+
+- Key idea: concentrate most non-native OS's functionality in a single server
+- Emulation library redirects again to the server, which handles system calls and memory management
+- Requires porting but most code can be reused
+
+<u>Small Granularity Server Systems</u>
+
+- Key idea: One server (module) per non-native OS's functionality
+- Each service is implemented in a separate module
+
+- Key advantage:
+  - decomposition means isolation
+- One server can service multiple client OSes
+
+<u>Performance</u>
+
+- Native OS, large granularity, and UNIX have similar performance
+- The amount of IPC is too high for small granularity system, so lower performance
+
+#### Questions
+
+1. What problem does this paper address?
+   - How to implement OS using a modular design to improve portability, evolvability, security, etc.?
+2. What is the author's main insight?
+   - Separate OS into two parts: only the necessary hardware management part runs in the kernel, other OS functionality in the user-level
+   - Kernel manages CPU, IPC, virtual memory, device I/O
+   - Use system call redirection to allow user-level processes to execute system calls
+3. What are the paper's key strengths?
+   - Microkernel allows better portability, evolvability, security, flexibility
+4. What are the paper's key weaknesses?
+   - Performance metrics are missing
+
+## 153 - seL4
+
+#### Key Idea
+
+- microkernel significantly reduces the amount of kernel code, making a formal verification of correctness possible.
+- The assumptions are hardware, compiler, assembly code, cache management, boot sequence.
+- It shows that formally verifying a system is possible
+- It is very time consuming (years of time) to formally verify even microkernel
+- No clear mentions of what correctness guarantees are achieved, only mentioned ~80 invariants
+
+## 154 - SPIN
+
+#### SPIN Key Idea
+
+- Extend the kernel (called spindle) at runtime through statically checked extensions
+- Safety ensured using programming language
+- Event/handler abstraction
+  - spindle listen to and handle events (e.g. spindle can listen and react to page faults and error)
+
+<u>Spindle Capabilities</u>
+
+- Run code in the kernel in general
+- Listen to and handle events
+- Fine-grain hardware resource manipulation
+- Define new syscalls
+
+#### Questions
+
+1. What problem does this paper address?
+   - How to modify OS to provide extended functionality in a minor way?
+2. What is the author's main insight?
+   - Dynamically load extensions to the kernel, which is statically checked
+   - Partition code across the user/kernel boundary to avoid extra IPC and switching
+   - Use special programming language to ensure safety
+   - Use an event/handler abstraction for the spindle
+3. What are the paper's key strengths?
+   - Minor modification to OSes (except PL requirement)
+   - extend functionality of existing OSes, while maintaining safety?
+4. What are the paper's key weaknesses?
+   - require special PL
+   - Safety cannot be secured by extensions
+   - Extensions should run in user space instead
+
+## 155 - Exokernel
+
+#### Abstractions
+
+- Abstraction is generalization that is often an API in CS, hides implementation details
+- Advantages of abstractions:
+  1. Simpler. Easy to understand and use
+  2. Standardization. Many implementations all satisfy the abstraction
+- Disadvantages of abstractions:
+  1. It is a compromise, the least common denominator. not perfect for each use case
+  2. Low performance (compared to tweaking the software for each use case)
+  3. Possible bloated software
+
+#### Problems in existing OSes (back then)
+
+- Low extensibility:
+  - abstractions are overly general
+  - apps cannot control resource management
+  - Implementations are fixed
+- Low performance:
+  - context switching is expensive
+  - Generalization and hiding information affect performance
+
+#### Exokernel Main Ideas
+
+- Separate resource management and protection
+  - kernel: resource sharing, protect hardware, protect LibOSes from each other
+  - untrusted LibOS: implement traditional OS abstractions, manage resources
+- Advantages:
+  - Efficient because LibOS is in user space
+  - Apps can link to their choice of LibOS for better performance
+  - Minimalist kernel design
+
+#### Design Principles
+
+1. Securely expose hardware
+   - Exokernel should only manage resources to the extent required by protection (i.e. allocation management, revocation, and ownership)
+2. Expose allocation
+   - LibOS should be able to request specific physical resources
+   - LibOS should participate in every allocation decision
+3. Expose names
+   - export physical names such as physical page number
+   - export bookkeeping data structures such as TLB entries
+   - avoids layer of indirection, better performance
+4. Expose revocation
+   - Apps should be notified when their resource is being taken away
+   - Apps can determine which resource to relinquish
+
+5. Exokernel still arbitrate resource contention with its own policy
+
+#### Mechanisms
+
+<u>Secure binding</u>
+
+- Goal: separate authorization and actual use of the resource
+  - Only perform expensive authorization at bind time
+  - Future accesses only need simple operations for protection checks
+- e.g. TLB fault -> LibOS maps virtual address to physical address and load into kernel (expensive authorization here) -> application accesses only need simple access checks
+
+<u>Visible Resource Revocation</u>
+
+- Revocation is like a dialogue where Exokernel revokes some page and LibOS saves the page to disk and frees it
+- Higher latency
+
+<u>Abort Protocol</u>
+
+- Forcefully break LibOS's all secure bindings if it fails to respond
+  - Inform the LibOS afterwards
+
+#### Questions
+
+1. What problem does this paper address?
+   - How to design an OS that provides minimal kernel design and allow maximum freedom to applications for a better performance?
+2. What is the author's main insight?
+   - Separate protection and resource management
+   - Kernel does protection only, and provides maximum freedom to untrusted LibOS which does resource management instead
+3. What are the paper's key strengths?
+   - Modularity
+   - applications can choose LibOS that satisfies its choice the most
+4. What are the paper's key weaknesses?
+   - Cost of development and portability is high
+
+## 156 - HiStar
+
+#### OS Security Problems today
+
+- OS today have protection
+  - file system with RBAC
+  - process protection
+  - memory protection
+- Problem now?
+  - Ignoring information flow
+  - Process P can read a secret file and write it to public space
+
+#### Information Flow Control (IFC)
+
+<u>Main Idea</u>
+
+- Files and processes colored
+  - Label private stuff RED
+  - Label public stuff GREEN
+
+- Enforce communications allowed/disallowed
+
+<u>Six Kernel Objects</u>
+
+1. Segment (data), array of bytes
+2. Threads
+3. Address space
+4. Device (Network)
+5. Gate (IPC)
+6. Container (directory)
 
 
+
+
+
+## 160 - Meltdown
+
+#### Summary
+
+- Exploit side effects of out of order attacks in order to get private data
+
+## 161 - Spectre Attack
+
+#### High-level Attack
+
+1. Attacker uses micro-architecture
+   - e.g. branch predictor or branch target buffer for saving secret
+   - e.g. cache for recalling secrete
+2. Victim loads secret under mis-speculation
+   - Load should NOT trap
+   - Still inappropriate if managed language or sandbox
+3. Victim saves secret in micro-arch state, e.g. cache
+4. Attacker recalls secret from micro-arch state
+
+#### Applicability
+
+- Many existing designs are vulnerable
+- Can let Javascript steal from Chrome
+
+#### Spectre Mitigation
+
+- Software: add hardware support to disable branch prediction when important
+  - Performance cost
+
+## 189 - Delay Scheduling
+
+#### Key Idea
+
+- When the scheduler is evaluating which node to execute the head-of-line job, it evaluates if current available nodes have the input data required to execute the job
+  1. If yes, schedule on that node
+  2. If no, delay scheduling this node and evaluate other jobs
+     1. If the job is skipped enough times, scheduler will relax the requirement to rack-level input data, eventually becomes global-level input data
+- The tradeoff here is fairness and data locality
+- This improves overall performance when the workload contains a lot of small jobs (so data locality nodes are available soon)
 
 
 
