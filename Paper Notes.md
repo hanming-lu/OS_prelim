@@ -5040,9 +5040,175 @@ Background
 5. Gate (IPC)
 6. Container (directory)
 
+<u>Information Flow</u>
 
+- Every kernel object has a label
+  - label describes the security property of the object
+  - HiStar will only allow kernel objects to interact (information to flow) if two kernel objects have consistent labels
 
+<u>Unix vs. IFC</u>
 
+- IFC tracks information flow so that any information flow out of high level gets tainted as high
+  - If some process doesn't have high level permission, it cannot access the information no matter how malicious it is
+- In Unix, a process may mistakenly leak information to a public file, screen, or network
+
+<u>Kernel</u>
+
+- HiStar offers a minimalist kernel that exposes information flow
+- Using labels on kernel objects, applications can implement security
+
+#### Questions
+
+1. What problem does this paper address?
+   - How to design a kernel that implements and enforces mandatory access checks and allow applications to build on it?
+2. What is the author's main insight?
+   - Use information control flow, where each kernel object is labeled
+   - More tainted object (e.g. password) cannot be accessed by lower tainted object (e.g. network)
+3. What are the paper's key strengths?
+   - Provide secure kernel where less privileged objects cannot access more privileged (tainted)
+4. What are the paper's key weaknesses?
+   - Performance
+
+## 157 - Using Crash Hoare Logic for Certifying the FSCQ File System
+
+#### Key Idea
+
+- Automatically checkable
+  - specify checkable invariants
+  - automatically generate code from proof
+- Verify file system in layers starting from a log at the bottom and then each layer above
+- Crash Hoare Logic extends Hoare Logic (precondition, postcondition) with recovery procedures to ensure integrity under fail-stop conditions
+  - contains the states a system can enter in a crash
+  - Crash conditions are used to prove the log (rolled back)
+- The proof is drastically simplified by proving the core logging mechanism, upon which safe transactions can be assumed
+
+#### Challenges
+
+- Lots of things
+- Complex features hard to specify invariants
+- Non-atomic operations combine into an atomic state transition
+- crash behavior: what happens when system crashes?
+
+## 158 - CryptDB
+
+#### Threat Model
+
+1. Curious database administrator (DBA)
+2. an adversary that gains complete control of the database and application servers
+   - Can prevent the confidentiality of logged-out users' data
+
+#### Challenges
+
+- How to minimize the amount of confidential information revealed to the DBMS server while efficiently executing a variety of queries?
+- Minimize the amount of data leaked when an adversary compromises the application server in addition to the database server
+
+#### CryptDB Properties
+
+- Enable running most standard queries on encrypted data
+- Protects data of users logged out during attack, even when all database and application servers are compromised
+- Modest overhead and no changes to DBMS
+
+#### How does a query work?
+
+1. The application issues a plaintext query, with sensitive information
+2. The proxy intercepts and rewrites: anonymizes table and column name, using master key to encrypt constant in the query
+3. Proxy checks if DB server should be given keys to adjust encryption layers before executing the query
+4. send encryption key if needed
+5. The DBMS does query as usual, which the proxy decrypt and return result to the application
+
+#### SQL-Aware Encryption
+
+<u>Random (RND)</u>
+
+- provides maximum security in CryptDB
+  - indistinguishability under an adaptive chosen-plaintext attack
+- Not efficient for any computation
+
+<u>Deterministic (DET)</u>
+
+- provides weaker guarantee than random, but still strong security
+  - leaks only which encrypted values correspond to the same data value, by deterministically generating the same ciphertext for the same plaintext
+- Allows equality checks
+
+<u>Order-preserving encryption (OPE)</u>
+
+- provides weaker guarantee than DET, 
+  - leaks order relations between data items without revealing the data itself
+- allow query that involves ordering
+
+<u>Homomorphic encryption (HOM)</u>
+
+- Allow the server to perform computations on encrypted data
+  - final result can be decrypted at the proxy
+- allow query that involves computation on data
+- as secure as RND
+
+<u>Join (JOIN)</u>
+
+- An encryption scheme used to join two columns
+  - DET is not sufficient because CryptDB uses different keys for different columns
+- Allow join between columns
+
+<u>Word search (SERACH)</u>
+
+- Used to perform searches on encrypted text
+- nearly as secure as RND
+- Allow LIKE operations
+
+#### Adjustable Query-based Encryption
+
+- Goal: use the most secure encryption schemes that enable running the requested queries
+
+<u>Onions of Encryption</u>
+
+- Encrypted in layers (like an onion)
+  - the outer most is the most secure
+  - inner ones are less secure, but provide more functionality
+- CryptDB dynamically adjusts the layer of encryption on the DBMS server for specific queries that a user cares about
+
+#### Chain Encryption Keys to User Passwords
+
+- Data items can be decrypted only through chain of keys rooted in password of the user
+- Data only available when user is logged in
+- Users logged out during an attack will be safe (if the attacker doesn't know the password of the user)
+
+#### Questions
+
+1. What problem does this paper address?
+   - How to enable queries on encrypted data while minimizing the amount of sensitive data leaked to the database server?
+2. What is the author's main insight?
+   - Use onions of layered encryption with a the outmost layer being the most secure
+   - Use different encryption schemes to enable different queries (e.g. equality, ordering, etc.)
+   - Use different keys for different users, so security isolation
+3. What are the paper's key strengths?
+   - prevent curious DBA and adversary attacks on non-logged in users
+4. What are the paper's key weaknesses?
+   - not effective against passive persistent attacks
+
+## 159 - Opaque
+
+#### Oblivious Computation
+
+- Computation may leak information as different data may result in different access pattern
+- Oblivious computation: construct computation such that data access pattern is independent of data values
+- Enclave is a private region of memory: can still leak information (e.g. computation pattern)!
+
+#### Threat Model
+
+- Adversary can control the cloud provider's software stack
+  -  observe and modify network traffic
+  - root access to OS: observe + modify data and accesses to unprotected memory
+  - Rollback attack: restore sealed enclave data to a previous state
+
+#### Modes
+
+- Encryption mode: data encryption + authentication + computation integrity
+- Oblivious mode: encryption mode + protects data content during computation
+
+####  Key Idea
+
+- Use oblivious algorithms to prevent access pattern information leakage
+- Enclave is not enough, side-channel attacks are possible
 
 ## 160 - Meltdown
 
@@ -5072,6 +5238,474 @@ Background
 
 - Software: add hardware support to disable branch prediction when important
   - Performance cost
+
+## 166 - ARIES
+
+#### Steal and Force
+
+<u>Force vs. No Force</u>
+
+- Related to durability
+- Force: write to disk when commit. Slow
+- No Force: NOT writing to disk when commit. A committed transaction may be lost before written to disk. Need REDO.
+
+<u>Steal vs. No Steal</u>
+
+- Related to atomicity
+- Steal: uncommitted data CAN be written to disk. An uncommitted transaction needs to be UNDO.
+- No Steal: uncommitted data cannot be written to disk. Slow
+
+#### Logging
+
+- Log: an ordered list of REDO/UNDO actions
+- Logging: Record REDO and UNDO information for every update
+  - sequential writes to log (e.g. a separate disk)s
+  - minimal info to log, so multiple updates in a single log page
+- A log record:
+  - <XID, pageID, offset, length, old data, new data>
+- For abstract types, have operations(args) instead of old/new data
+
+#### Write-Ahead Logging (WAL)
+
+1. Atomicity: 
+   - Must force log record of an update to disk before corresponding data page is written to disk
+2. Durability: 
+   - Must force all log records for a transaction to disk before it commits
+
+- Log every update (even UNDOs in transaction abort)
+- Upon restart,
+  1. REDO all history without backtracking (all history includes aborted transactions)
+  2. UNDO aborted transactions 
+
+<u>Log Sequence Number</u>
+
+- Each log record has a unique log sequence number (LSN)
+- Each data page has a pageLSN,
+  - The LSN of the most recent log record for an update to that page
+- System keeps a flushedLSN
+  - The max LSN flushed so far
+
+<u>Other Log-related state</u>
+
+- Transaction table:
+  - one entry per active transaction
+  - contains XID, status, and LastLSN
+- Dirty page table:
+  - One entry per dirty page in the buffer pool
+  - Contains the LSN that first dirties the page
+
+#### Normal Execution of a Transaction
+
+- reads and writes followed by commit or abort
+  - assume page write is atomic on disk
+- Strick 2PL for writes for concurrency control
+- STEAL, No-Force buffer management, with Write-Ahead Logging
+
+#### Checkpointing
+
+- Checkpoint metadata rather than data
+  - periodically checkpoint to minimize the recovery time after a crash
+- begin_checkpoint record: indicates when checkpoint begins
+- end_checkpoint record: contains current **transaction table** and **dirty page table**
+
+- During checkpointing:
+  - other transactions continue to run, so state represent a mix of state after begin_checkpoint
+  - No attempt to force dirty page to disk, so effectiveness of checkpointing is limited by the oldest unwritten change to dirty page
+
+#### Transaction Abort
+
+- We want to undo the updates by the aborted transaction
+  1. Start by finding its last log using LastLSN in the transaction table
+  2. using prevLSN of the the log to find its previous log records
+  3. before starting UNDO, write an abort log record
+  4. Before restoring old value, write a Compensation Log Record (CLR)
+     - continue logging while undo
+  5. At end of all UNDOs, write an "end" log record
+
+#### Transaction Commit
+
+1. Write commit to log
+2. Make sure the transaction's all logs are flushed to disk
+   - Need to guarantee LastLSN <= flushedLSN
+   - Log flushes are sequential, synchronous writes to disk
+   - Many log records per page
+3. Make transaction visible
+   - drop all locks
+4. Write "end" log record in the end
+
+#### Crash Recovery
+
+<u>Big Picture</u>
+
+1. Start from a checkpoint
+2. Three phases:
+   1. Figure out which transactions committed since checkpoint, which failed
+   2. REDO all actions
+   3. UNDO effects of failed transactions
+
+<u>1. Analysis Phase</u>
+
+1. Reconstruct state at checkpoint
+   - via end_checkpoint record
+2. Scan log forward from begin_checkpoint
+   - End record: remove Xact from Xact table
+   - Update record: if P not in dirty page table, add it
+   - Other record: add Xact to Xact table, change Xact status on commit
+
+<u>2. REDO Phase</u>
+
+1. Repeat history to reconstruct state at crash
+   - Reapply all updates (even of aborted Xacts), redo CLRs
+2. Scan forward from log record containing smallest recLSN in D.P.T.
+3. For each REDO:
+   1. Reapply logged action
+   2. Set pageLSN to LSN
+4. at the end of REDO pass, the database has a state that reflects exactly everything on a stable log
+
+<u>3. UNDO Phase</u>
+
+1. Backward processing log records, undo each record and generate CLR
+2. avoid undo what was already undone using CLR's undoNextLSN
+
+#### Additional Crash Issues
+
+- How to limit the amount of work in REDO?
+  - periodically flush dirty pages in the background
+- How to limit the amount of work in UNDO?
+  - Avoid long-running Xacts
+
+#### Log Record Content
+
+1. Actual data (or data diff)
+2. operation(args)
+3. describes changes to a specific page, logically within that page
+
+## 167-170 Read
+
+## 171 - SEDA
+
+#### Problem
+
+<u>Thread-based concurrency</u>
+
+- There is a thread pool, and a scheduler assigns tasks to threads
+  - Use concurrency mechanism for critical region
+- Advantages:
+  - easy to implement
+- Disadvantages:
+  - As the number of threads increases, contention for resources and context switches cause high overhead
+
+<u>Event-based concurrency</u>
+
+- There is only one thread (per CPU) running, callbacks are used to run tasks asynchronously
+  - Subsequent tasks are scheduled after the previous task finishes
+  - no concurrency control needed
+- Advantages:
+  - efficient and highly scalable
+- Disadvantage:
+  - Hard to engineer and tune
+  - scheduling is challenging
+
+#### Staged Event-Driven Architecture (SEDA)
+
+- Combine thread-based and event-based concurrency
+
+  - achieve both ease for programming and extensive concurrency
+
+- Key Idea: decompose service into stages separated by queues
+
+  - Each stage performs a subset of request processing
+
+  ![image-20210811172732377](/Users/hanminglu/Library/Application Support/typora-user-images/image-20210811172732377.png)
+
+- Stage:
+
+  - event queues can use various control policies
+  - Modularity: each stage implemented and managed independently
+  - Facilitates spotting bottlenecks and debugging
+
+- Controller:
+
+  - thread pool controller: ideal degree of thread-based concurrency at each stage
+    - easy for programming
+  - batching controller: controls the number of events in a batch for the stage
+    - observe queue performance of subsequent stages and adjust batching factor
+
+#### Questions
+
+1. What problem does this paper address?
+   - How to achieve both extensive scalability and ease of programming?
+2. What is the author's main insight?
+   - Decompose service into stages, separated by queues
+   - Combine thread-based and event-based concurrency
+3. What are the paper's key strengths?
+   - highly scalable
+   - easier to program than event-based concurrency
+   - modularity
+   - adaption to load variations
+4. What are the paper's key weaknesses?
+   - Increased latency for traversing multiple stages and experience multiple context switches
+     - and queuing
+   - average performance compared to event-driven?
+   - programming still harder than thread-based
+
+## 173 - An Analysis of Linux Scalability to Many Cores
+
+#### Common Problems
+
+1. Lock wait time: The tasks may lock shared data structures, so increasing the number of cores increase the lock wait time
+2. Cache coherence time: Tasks may write a shared memory location, so increasing the number of cores increases the time spent waiting for cache coherence protocol
+3. Higher cache miss rate: tasks fight for shared cache
+4. Other resource contention
+
+## 174 - Multikernel
+
+#### Key Ideas
+
+1. Make all OS-level inter-core communication explicit
+   - instead of shared memory, use message passing
+   - No memory is shared between the code running on each core, except used for messaging channels
+2. Make OS structure hardware dependent
+3. Replicate state across cores instead of sharing state
+   - instead of sharing memory, each core should have its own replica of state
+   - Consistency between these states are maintained via exchanging messages
+
+## 176 - Implementing RPC
+
+#### Overview
+
+- When a remote procedure call is invoked:
+  1. calling environment is suspended, parameters are passed across the network
+  2. desired procedure is executed remotely
+  3. when the procedure finishes and produces its results, the result is sent back to the calling environment, where execution resumes
+
+#### RPC Steps
+
+1. the user makes a "perfectly" normal local call
+2. It invokes a corresponding procedure in the user-stub
+3. the user-stub places a specification of the target procedure and arguments into packets
+4. RPC Runtime transmits reliably to the callee machine
+5. the server's RPC Runtime receives the packets, send to server-stub
+6. server-stub unpacks the procedure and arguments, does a "perfectly normal" local call, which invokes the procedure on the server machine
+7. after server procedure finishes, use the same mechanism to send back results
+
+- calling procedure is suspended before receiving the results
+
+#### RPC Binding
+
+<u>Questions:</u>
+
+1. **Naming**: How does a client of the binding mechanism specify what he wants to be bound to?
+2. **Location**: How does a caller determine the machine address of the callee? How to specify which remote procedure to be invoke?
+
+<u>Naming & Location</u>
+
+- Binding operation binds an importer of an interface to a (remote) exporter of an instance
+  - type: what to implement
+  - instance: which specific machine that implements it
+- Use a distributed database to store the exported interfaces (naming) and their (locations).
+- Server publishes interface to the database, and clients contacts the database for binding interface 
+
+#### Packet-Level Transport Protocol
+
+- Latency is very important
+  - No TCP
+  - No connection setup or tear down
+- Guarantee that if the call returns, then exactly sent once
+  - if abort, either one or zero time
+- If server RPCRuntime responds, no upper limit on wait time
+  - e.g. deadlocks or loops
+- If communication breakdown or server crashes, abort
+
+#### Questions
+
+1. What problem does this paper address?
+   - Implementation of a practical RPC that has reasonably low latency
+2. What is the author's main insight?
+   - user and server run normal local call, use user-stub and server-stub to implement RPC
+   - No shared memory
+   - for Transport protocol, use reliable protocol with no setup and tear down to minimize latency
+   - Flexible binding
+   - exception handling
+3. What are the paper's key strengths?
+   - Low latency
+   - Higher abstraction, easier to use for programmers
+4. What are the paper's key weaknesses?
+   - more overhead (marshalling/unmarshalling) compared to message passing
+
+## 177 - Lightweight RPC
+
+#### Key Idea
+
+- Most RPC in distributed OS is 1) local between different protection domains, and 2) small
+- Local RPC can be optimized using 4 techniques:
+  1. Simple control transfer: allows client's thread to continue running in server's domain
+  2. Simple data transfer: Shared buffers are pre-allocated (at the time of interface binding), and the caller needs to copy data to the stack, and callee can just use the stack
+  3. Simple stub: use stub generator that produces simple stubs in special language
+  4. Design for concurrency: cache domains on multiprocessors, idle cores can be used to cache top protection domains
+
+#### Implementation
+
+1. Client calls procedure => kernel trap
+   - caller writes arguments to shared argument stack
+2. Kernel validates caller
+3. Binds to server
+4. OS dispatches client code in server domain (client runs in server's address space with a shared argument stack)
+
+## 178 - Active Message
+
+#### Key Idea
+
+- A message contains a pointer to code which is a pre-registered handler for the message, which then combines the message content to start computation as soon as possible
+- pros:
+  - Async communication
+  - No buffering except in networking
+  - Improved performance
+  - Handlers are kept simple: an interface between network and computation
+
+#### Comparison to other Programming Models
+
+- blocking send/receive:	
+  - requires setup overhead, blocking
+  - low utilization of network bandwidth, high latency
+
+- unblocking send/receive with buffering:
+  - instantaneous return to user
+  - buffer messages at send and receive, higher latency overhead
+
+- RPC:
+  - Active message handler does not perform computation on the network data, but only extracts data from the network and adds it to the existing computation
+
+## 179 - Coda
+
+#### Key Idea
+
+- Use client caching to improve availability during disconnected operation
+- Hoarding (connected state), clients hoard manually specified and recent files locally on their disk
+- Whole file caching: simplifies consistency implementation
+- Optimistic consistency model with callback-based consistency where server tracks and notifies client caches that they are dritied 
+
+#### Replication
+
+- Serverside replication: optimistic, first-class replica, read-write replicas on several servers
+- Clientside replication: optimistic, second-class replica, clients hoard files locally and prepare for disconnected operation
+- When connected, callbacks ensure consistency: clients are notified when their copy is dirtied
+- Disconnected operations will operate on local cached copy, and propagated to servers while reconnection
+
+#### Scalability
+
+- Tradeoff between availability and consistency: when system is unavailable, enter reduced consistency operation
+- Scalability through 
+  - whole-file caching: open cache misses on open, not on others (e.g. read, write, seek, close)
+  - callback cache coherence: consistency among server and client replicas
+- Put more functionality on clients
+
+#### Optimistic vs. Pessimistic vs. lease
+
+<u>Pessimistic</u>
+
+- pros: always consistent.
+- cons: when disconnected, becomes completely unavailable. a client could lock up entire directory and become disconnected.
+
+<u>Optimistic</u>
+
+- pro: always readable/writable. High availability, high throughput
+- cons: conflict resolution is costly, or even violates transparency
+
+<u>Leases</u>
+
+- pro: avoids the issue that a disconnected client can lock up entire directory
+- con: when lease expires, disconnected client still cannot operate. updated files could be lost if disconnected.
+
+## 183 - Working Set
+
+#### Key Idea
+
+- It is important to choose which pages are stored in memory:
+  - If too many pages of a process are stored in the memory, then fewer other processes can be ready at any one time
+  - if too few pages of a process are stored in the memory, then page faults happen too frequently, thus the number of active processes currently executing (i.e. not waiting for page fault) approaches zero
+- Working set model: the process is in RAM iff all the pages that it is currently using is in RAM
+  - working set W(t, ω): the set of pages accessed between the time interval (t-ω, t), working set strategies try to keep this in RAM
+  - all or nothing: if some is not in RAM, then the process is paged out to disk, freeing memory for other processes to use
+- Thrashing: if too many processes are allowed to run in a time slice, then the number of pages referenced more than there is RAM, causing thrashing
+- If too many processes, swap some to disk so that all processes left have a complete working set.
+  - All processes (even swapped out ones) will complete faster than running all at once
+- Working set strategy pros:
+  1. prevent thrashing - optimize CPU utilization & throughput
+  2. optimize the number of parallel processes - optimize throughput
+
+#### Implementation
+
+- Keeping a list of past ω page accesses has overhead
+- Use a timestamp of t-ω, all pages accessed in t-ω is in working set
+
+## 184 - Virtual Memory Management in VAX/VMS OS
+
+#### Key Design Requirements:
+
+1. Limit a fault heavy process' impact on other processes - use process-local page replacement
+2. Program slowly fault into RAM - use spatial locality-based batched paging
+3. Increase disk throughput - batched page fault and dirty page write
+4. Processor time searching page list - use TLB to cache virtual-physical mapping
+
+#### Virtual Address Space Design
+
+- Address split in half:
+  - per-process address space: divided into program and stack
+  - kernel address space - shared among all processes
+- Each user address lookup takes two lookups: 1) find user space page table in system page table (in kernel address space); 2) find user space address
+- Leave the first page empty to catch uninitialized pointers
+
+#### Pager System
+
+- Each process has a limited resident set of pages
+  - all page replacement happen in the per-process resident set
+- FIFO is used since CPU is more valuable than memory
+- When pages are removed from resident set:
+  - if unmodified, add to the end of free list
+    - pro: when allocate new, avoid searching through the page table
+  - if modified, add to the end of modified list
+    - pros: 1) written to disk in batch, better disk throughput; 2) another layer of caching if it is paged before written to disk
+- A page fault reads a cluster of extra pages into memory:
+  - low marginal cost to bring a cluster of pages
+  - better spatial locality
+
+#### Swapper
+
+- Programs are swapped to disk and back both as a whole unit
+  - avoid that a missing resident set reduces process' performance during execution
+
+## 185 - RAMClouds
+
+#### Key Goals
+
+1. All information is kept in DRAM at all times
+2. RAMCloud must scale automatically to support  thousands of storages servers
+3. RAMCloud must be as durable as if it were stored on disk
+
+#### Low Latency RPC
+
+- It is possible to reduce RPC latency of 300-500 μs to 5-10 μs
+- Need switches to achieve less than 1μs routing time
+- Need a core dedicated to polling from network interface, so eliminate interrupt and context switch
+- Need to circumvent OS or VMM+OS to have packets directly mapped to application address space
+
+#### Durability and Availability
+
+- Buffered logging:
+
+  - One primary server, two backup servers
+
+  1. When a write arrives at the primary, the primary forwards a log entry of the write to backup servers
+  2. Backup servers reply with ack after the log entry is in its RAM
+  3. The primary can now return write
+  4. Backup servers periodically save batched logs to disk to utilize disk bandwidth
+  5. Checkpointing periodically as in a normal log
+
+#### Concurrent Transaction in RAMCloud
+
+- The number of concurrent transactions will reduce due to lower processing time
+- With less concurrent transactions, can use optimistic concurrency control
 
 ## 189 - Delay Scheduling
 
