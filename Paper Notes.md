@@ -3784,7 +3784,7 @@ Background
 
 - Client only specifies the data, GFS appends it to the file at least once atomically at an offset determined by the GFS
 - Add additional logic to the write control flow:
-  - after client send record append to the primary, the primary checks if appending the record will exceed the maximum size
+  - after client send record append to the primary, the primary checks if appending the record will exceed the maximum chunk size
     - if no, append at the current end of file. Done.
     - if yes, pad the current chunk, create a new chunk, and ask the client to try again
 - After successful record append,
@@ -4066,7 +4066,7 @@ Background
 
 - when memtable size reaches a threshold, convert it into an SSTable, write to GFS, initiate a new memtable
 - Two goals:
-  1. Shrink memorage usage of the tablet server
+  1. Shrink memory usage of the tablet server
   2. during tablet recovery, reduce the amount of data read from commit log
 
 <u>Merging Compaction</u>
@@ -4776,14 +4776,14 @@ Background
 
 #### Microkernel
 
-<u>Monotholic Kernel</u>
+<u>Monolithic Kernel</u>
 
 - Running entirely in the kernel mode
 
 <u>Microkernel</u>
 
 - Modular design that separates OS into two parts:
-  1. Control basic hardware resources (i.e. microkernel), responsible for low-level process management, handle message passing, interrupt handling
+  1. Control basic hardware resources (i.e. microkernel), responsible for low-level process management, handle message passing, interrupt handling, virtual memory
   2. Control unique characteristics of the environment for applications, such as file system, memory management.
 
 - Advantages:
@@ -5259,7 +5259,7 @@ Background
 
 - Log: an ordered list of REDO/UNDO actions
 - Logging: Record REDO and UNDO information for every update
-  - sequential writes to log (e.g. a separate disk)s
+  - sequential writes to log (e.g. a separate disk)
   - minimal info to log, so multiple updates in a single log page
 - A log record:
   - <XID, pageID, offset, length, old data, new data>

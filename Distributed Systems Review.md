@@ -396,13 +396,13 @@ Definition:
 
 - RAID Levels
 
-  - |        | Definition                    | Capacity | Reliability | Performance                       |
-    | ------ | ----------------------------- | -------- | ----------- | --------------------------------- |
-    | RAID 0 | Striping only                 | N        | 0           | Nx                                |
-    | RAID 1 | Mirror disk                   | N/2      | 1           | 1/2 Nx for write, 2Nx for read    |
-    | RAID 4 | Block-based Parity            | N-1      | 1           | N read, bad for write             |
-    | RAID 5 | Block-based Parity + striping | N-1      | 1           | Good for both read and write      |
-    | RAID 6 | P+Q Redundancy (2x parity)    | N-2      | 2           | worse for write compared to RAID5 |
+  - |        | Definition                                | Capacity | Reliability | Performance                       | Read Perf.     | Write Perf.                                            |
+    | ------ | ----------------------------------------- | -------- | ----------- | --------------------------------- | -------------- | ------------------------------------------------------ |
+    | RAID 0 | Striping only                             | N        | 0           | Nx                                | 1x random read | Nx                                                     |
+    | RAID 1 | Mirror disk                               | N/2      | 1           | 1/2 Nx for write, 2Nx for read    | 2Nx            | 1/2 Nx                                                 |
+    | RAID 4 | Block-based striping + centralized parity | N-1      | 1           | N read, bad for write             | Nx random read | centralized parity -> write bottleneck                 |
+    | RAID 5 | Block-based striping + distributed parity | N-1      | 1           | Good for both read and write      | 1x random read | 1/2x: write amplification is required to update parity |
+    | RAID 6 | P+Q Redundancy (2x distributed parity)    | N-2      | 2           | worse for write compared to RAID5 | 1x random read | 1/3x: write amplification to update both parities      |
 
 <u>Three Modes of Operation</u>
 
