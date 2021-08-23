@@ -2817,8 +2817,6 @@ Background
 - Administrators and developers simplify deployment by installing each application in a separate OS copy, either a new machine or a new VM
 - Customers want to get the performance they paid for, so provision fixed units of capacity with no oversubscription
 
-
-
 <u>Kernel Virtual Machine (KVM)</u>
 
 - KVM is a feature of Linux that allows Linux to act as a type 1 hypervisor
@@ -2835,8 +2833,6 @@ Background
 - Can contain as large as a system (system container) or as little as a process (application container)
 - Application container consumes less RAM than system container or VM because it does not contain redundant management processes
 - Application containers do not have separate IP addresses
-
-
 
 <u>VM vs. Container</u>
 

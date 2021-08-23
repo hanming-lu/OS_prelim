@@ -477,8 +477,8 @@
 #### Practice Questions:
 
 1. (Done) What is hierarchical locking? What is the tradeoff exposed?
-2. What are the four isolation levels?
-3. What is column store? pros and cons?
+2. (Done) What are the four isolation levels?
+3. (Done) What is column store? pros and cons?
 
 #### Fundamental Tradeoffs:
 
@@ -549,12 +549,12 @@
 
 #### Practice Questions:
 
-1. What are force and steal? Why are they efficient or not efficient?
+1. (Done) What are force and steal? Why are they efficient or not efficient?
 
 #### Fundamental Tradeoffs:
 
 1. simplicity vs. overhead: LRVM
-2. 
+2. performance vs. durability/atomicity: survey
 
 #### 110 - Lightweight Recoverable Virtual Memory
 
@@ -562,6 +562,7 @@
   - segments (e.g. metadata) are stored on disk, mirrored in virtual memory by applications
   - applications explicitly set which regions to copy, when it is modified
   - use undo/no-redo logging because all changes are committed to log first
+  - implements a copy-on-write
 - **Pros**: a simple yet very useful layer
 - **Cons**: extra overhead if additional functionality needs to be implemented on top
 
@@ -575,7 +576,7 @@
 <u>Write-Ahead Logging (WAL)</u>
 
 - Can log either old/new value or operation(args)
-- Atomicity: UNDO log record needs to be written to disk, before uncommitted new value is flushed to disk
+- Atomicity: UNDO log record needs to be written to disk, before uncommitted page is flushed to disk
 - Durability: Commit & all txn's records needs to be written to disk, before return to caller
 
 <u>Crash Recovery</u>
@@ -592,11 +593,53 @@
 
 #### Practice Questions:
 
-1. How does live migration of VM work? 
+1. (Done) How does live migration of VM work? what workload does it work the best? which the worst?
 
 #### Fundamental Tradeoffs:
 
-1. 
+1. performance vs. portability: Disco, Xen
+2. performance vs. security/isolation: vm vs. container
+
+#### 128 - Disco
+
+- Disco is an implementation of **full virtualization** where VMM is a layer between hardware and OSes
+  - **Processor**: VMM runs in ring 0 (kernel), guest OS in ring 3 (supervisor), o/w user mode. Traps are handled by the VMM
+  - **Memory**: OS knows virtual -> physical, VMM knows physical -> machine, VMM uses a software TLB. TLB needs to be flushed when switching between VMs
+  - **Device I/O**: VMM intercepts, maps, translates, and redirect device I/O. Copy-on-write if needed
+  - **NUMA Memory Management**: dynamic page migration and replication among machines to support non-NUMA-aware OS
+- **Pros**: no modification to OS or app required
+- **Cons**: TLB miss expensive (flushed when VM switch, each miss require VMM overhead), processor overhead, device I/O overhead, significant overhead compared to paravirtualization
+
+#### 129 - Xen
+
+- Xen is an implementation of paravirtualization where guest OSes (not app) need to be modified
+  - **CPU**: allow guest OS to pre-register exception handler to bypass Xen for certain syscalls
+  - **Memory**: 1) allow guest OS to see machine memory and set virtual -> machine mapping in hardware TLB (need validation from Xen, can be batched); 2) VMM exists in every address space, no context switch needed to access
+  - **Device I/O**: asynchronous I/O ring is used to achieve zero-copy vertical passing
+  - **Network**: VMM offers Network interface for VM to bind to, the network interface accepts packets on behalf of VM and pass to them through zero-copy free-page exchange
+  - **Disk I/O**: VMM intercepts, translates, and maps to a physical location, then use DMA to allow zero-copy exchange
+  - **Management**: done with domain0, a guest-OS level VM instance; VMM only offers basic operations
+
+- **Pros**: very low performance overhead (2~5%), separate protection and management, zero-copy whenever possible
+- **Cons**: need OS modifications
+
+#### 130 - Live Migration of VM
+
+- Live migration of VM uses a three-step process to allow VMM to migrate guest OS between machines with a careful usage of CPU, memory and network
+  - Three steps: 1) First round copy all pages over; 2) iteratively copy modified pages (analyze with writable working set with VMM shadow page); 3) stop and copy all remaining modified pages over, redirect and notify network, and remount disk
+- vs. process migration: 1) no residual dependency problem; 2) allow migrating all state; 3) separate of concern between user and os (user doesn't need to give any permission, os doesn't need any app info)
+- **Pros**: minimize downtime, minimize total migration time, minimize resource utilized, effective for small WSS, no residual dependency
+- **Cons**: not efficient if WSS is significant (longer downtime)
+
+#### 131 - Performance Comparison between VM and container
+
+- Kernel Virtual Machine: Linux allows it to run as a hypervisor and allow guest OS to run in a Linux process
+- Linux Container: Linux runs natively, uses Linux namespace feature to add container ID to processes. Each container has no visibility or access to outside containers
+
+- Comparison:
+  - **Isolation**: VM is safer because it provides strict isolation, where one VM crashes will not affect VMM and other VMs. Container crash may crash the underlying OS.
+  - **Performance**: VM has extra overhead in 1) CPU because double scheduling and VMM-level emulated traps; 2) memory because paging requires VMM validation or intercept; 3) disk/network I/O because they are emulated by VMM. Container runs close to native.
+  - **Portability**: container is highly portable
 
 #### 132/133 - Cloudlet
 
@@ -786,6 +829,9 @@
   - **Handler**: compared to RPC, handler does not execute, but only send to another computation thread
   - **Queuing and buffering**: minimizes queuing, only buffer at network stack, polled from network asap by handler
   - **Async client**: no blocking at client
+- vs. RPC: 
+  - **OS involvement**: required for RPC to move data between kernel and user space; active message eliminate OS intervention
+  - **Security**: less of concern for active message because from a single program
 - **Pros**: low latency
 - **Cons**: congestion control and fault tolerance?
 
